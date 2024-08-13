@@ -1,51 +1,57 @@
-# React + TypeScript + Vite
+# 3D Object Generation from Segmented Image
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This project demonstrates an application that generates 3D objects from segmented images using AI-powered image generation and segmentation techniques.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- Image generation from text prompts using ComfyUI
+- Image segmentation using SAM2 (Segment Anything Model 2)
+- 3D model generation from segmented image parts
+- Interactive 3D scene visualization using Three.js and React Three Fiber
 
-## Expanding the ESLint configuration
+## Technologies Used
 
-If you are developing a production application, we recommend updating the configuration to enable type aware lint rules:
+- React
+- TypeScript
+- Three.js
+- React Three Fiber
+- ComfyUI
+- SAM2 (Segment Anything Model 2)
+- Flask (for backend services)
 
-- Configure the top-level `parserOptions` property like this:
+## Setup and Installation
 
-```js
-export default tseslint.config({
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
-```
+1. Clone the repository
+2. Install frontend dependencies:
+   ```
+   npm install
+   ```
+3. Install backend dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+4. Start the Flask backend server:
+   ```
+   python service/sam_segmentation_service.py
+   ```
+5. Start the React development server:
+   ```
+   npm start
+   ```
 
-- Replace `tseslint.configs.recommended` to `tseslint.configs.recommendedTypeChecked` or `tseslint.configs.strictTypeChecked`
-- Optionally add `...tseslint.configs.stylisticTypeChecked`
-- Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and update the config:
+## Usage
 
-```js
-// eslint.config.js
-import react from 'eslint-plugin-react'
+1. Enter a text prompt to generate an image
+2. Click on the generated image to select a segment
+3. The application will attempt to create a 3D model from the selected segment
+4. View and interact with the 3D model in the right panel
 
-export default tseslint.config({
-  // Set the react version
-  settings: { react: { version: '18.3' } },
-  plugins: {
-    // Add the react plugin
-    react,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended rules
-    ...react.configs.recommended.rules,
-    ...react.configs['jsx-runtime'].rules,
-  },
-})
-```
-# React-3DObject-From-Image
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the MIT License.
+
+
