@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { Mask } from './App';
 
 interface SegmentationOptions {
   minScore?: number;
@@ -11,7 +12,7 @@ export async function segmentImage(
   imageData: string, 
   prompts: [number, number][], 
   options: SegmentationOptions = {}
-) {
+): Promise<Mask[]> {
   const { minScore = 0.3, maxMasks = 20, iouThreshold = 0.1, minAreaRatio = 0.02  } = options;
   
   try {

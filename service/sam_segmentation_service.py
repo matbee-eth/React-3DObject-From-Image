@@ -1,7 +1,10 @@
 import io
 import json
 import os
+import select
 import subprocess
+import threading
+import time
 from flask import Flask, request, jsonify, send_file
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -12,6 +15,9 @@ import logging
 from PIL import Image
 from scipy import ndimage
 
+# Save the image temporarily
+import random
+import string
 app = Flask(__name__)
 logging.basicConfig(level=logging.DEBUG)
 
@@ -22,10 +28,33 @@ device = "cuda"  # or "cpu" if CUDA is not available
 sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
 predictor = SAM2ImagePredictor(sam2_model)
 
+class SubprocessRunner:
+    def __init__(self):
+        self.process = None
+        self.result = None
+        self.completed = threading.Event()
+
+    def run(self, cmd):
+        self.process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        stdout, stderr = self.process.communicate()
+        self.result = subprocess.CompletedProcess(
+            cmd, self.process.returncode, stdout, stderr
+        )
+        self.completed.set()
+
+    def terminate(self):
+        if self.process:
+            self.process.terminate()
+            self.process.wait()
+
 @app.route('/generate-model', methods=['POST', 'OPTIONS'])
 def generate_model():
     if request.method == 'OPTIONS':
-        # Respond to the preflight request
         response = app.make_default_options_response()
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
         return response
@@ -34,18 +63,35 @@ def generate_model():
         data = request.json
         image_data = base64.b64decode(data['image'].split(',')[1])
 
-        # Save the image temporarily
+
+        def generate_random_string(length=10):
+            letters = string.ascii_lowercase
+            return ''.join(random.choice(letters) for _ in range(length))
+
         img = Image.open(io.BytesIO(image_data))
-        img_path = 'temp_image.png'
+        img_path = f'temp_image_{generate_random_string()}.png'
         img.save(img_path)
 
         # Run the 3D model generation script
         output_dir = 'output/'
-        result = subprocess.run(
-            ['python', 'stable-fast-3d/run.py', img_path, '--output-dir', output_dir],
-            capture_output=True,
-            text=True
-        )
+        cmd = ['python', 'stable-fast-3d/run.py', img_path, '--output-dir', output_dir]
+
+        runner = SubprocessRunner()
+        thread = threading.Thread(target=runner.run, args=(cmd,))
+        thread.start()
+
+        while not runner.completed.is_set():
+            if request.environ.get('werkzeug.server.shutdown'):
+                runner.terminate()
+                os.remove(img_path)
+                return jsonify({
+                    'error': 'Model generation was canceled',
+                    'details': 'The client disconnected before the process completed.'
+                }), 499
+
+            time.sleep(0.1)
+
+        result = runner.result
 
         if result.returncode != 0:
             logging.error(f"Model generation failed: {result.stderr}")
@@ -75,6 +121,7 @@ def generate_model():
             'error': 'An unexpected error occurred',
             'details': str(e)
         }), 500
+
 
 
 def non_max_suppression(masks, scores, iou_threshold, min_area_ratio=0.02):
