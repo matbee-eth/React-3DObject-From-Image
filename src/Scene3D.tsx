@@ -1,186 +1,335 @@
-import React, { useState, useRef, useEffect, Suspense } from 'react';
-import { Canvas, useThree } from '@react-three/fiber';
-import { OrbitControls, useGLTF, PerspectiveCamera, Environment } from '@react-three/drei';
+import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import * as THREE from 'three';
-import { generateModelFromImage } from './imageToModelService';
+import { Canvas, } from '@react-three/fiber';
+import { OrbitControls, PerspectiveCamera } from '@react-three/drei';
+import { Mask, Point, extractMaskedImage } from './App';
+import Model from './Model';
 
-interface Mask {
-  float_mask: number[][];
-  binary_mask: number[][];
-  score: number;
+function deepCompare(obj1: any, obj2: any): boolean {
+  if (obj1 === obj2) return true;
+  if (typeof obj1 !== 'object' || typeof obj2 !== 'object' || obj1 == null || obj2 == null) return false;
+  const keys1 = Object.keys(obj1);
+  const keys2 = Object.keys(obj2);
+  if (keys1.length !== keys2.length) return false;
+  for (const key of keys1) {
+    if (!keys2.includes(key) || !deepCompare(obj1[key], obj2[key])) return false;
+  }
+  return true;
+}
+
+export function useDebugChangedProps<T extends object>(props: T, componentName: string) {
+  const prevPropsRef = useRef<T | null>(null);
+
+  useEffect(() => {
+    if (prevPropsRef.current) {
+      const changedProps: Partial<T> = {};
+      let hasChanges = false;
+
+      Object.keys(props).forEach((key) => {
+        const k = key as keyof T;
+        if (!deepCompare(props[k], prevPropsRef.current![k])) {
+          changedProps[k] = props[k];
+          hasChanges = true;
+        }
+      });
+
+      if (hasChanges) {
+        console.log(`${componentName} - Changed props:`, changedProps);
+      }
+    }
+
+    prevPropsRef.current = { ...props };
+  });
 }
 
 interface Scene3DProps {
   imageUrl: string;
+  modelUrl: string | null;
   masks: Mask[];
+  points: Point[];
   imageData: ImageData;
+  onImageClick: (event: React.MouseEvent<HTMLCanvasElement>) => void;
 }
 
-function Model({ url }: { url: string }) {
-  const { scene } = useGLTF(url);
-  const { camera } = useThree();
-
-  useEffect(() => {
-    const box = new THREE.Box3().setFromObject(scene);
-    const center = box.getCenter(new THREE.Vector3());
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-
-    if (camera instanceof THREE.PerspectiveCamera) {
-      const fov = camera.fov * (Math.PI / 180);
-      let cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2));
-      cameraZ *= 1.5;
-      camera.position.z = cameraZ;
-      camera.updateProjectionMatrix();
-    }
-
-    scene.position.x = -center.x;
-    scene.position.y = -center.y;
-    scene.position.z = -center.z;
-
-    scene.rotation.y = Math.PI;
-
-    // Traverse the scene and set materials to MeshStandardMaterial
-    scene.traverse((child) => {
-      if (child instanceof THREE.Mesh) {
-        child.material = new THREE.MeshStandardMaterial({
-          color: child.material.color,
-          map: child.material.map,
-          normalMap: child.material.normalMap,
-          metalness: 0.1,
-          roughness: 0.8,
-        });
+export interface MaskBounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+export function calculateMaskBounds(mask: Mask): MaskBounds {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  
+  for (let y = 0; y < mask.binary_mask.length; y++) {
+    for (let x = 0; x < mask.binary_mask[y].length; x++) {
+      if (mask.binary_mask[y][x] === 1) {
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
       }
-    });
-  }, [scene, camera]);
-
-  return <primitive object={scene} />;
+    }
+  }
+  
+  return { minX, maxX, minY, maxY };
 }
 
-export function Scene3D({ imageUrl, masks, imageData }: Scene3DProps) {
-  const [selectedMask, setSelectedMask] = useState<Mask | null>(null);
-  const [modelUrl, setModelUrl] = useState<string | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        const img = new Image();
-        img.onload = () => {
-          canvas.width = img.width;
-          canvas.height = img.height;
-          ctx.drawImage(img, 0, 0);
-          drawMasks(ctx);
-        };
-        img.src = imageUrl;
-      }
-    }
-  }, [imageUrl, masks]);
+interface DebugPanelProps {
+  showWireframe: boolean;
+  setShowWireframe: (show: boolean) => void;
+  showTextureDebug: boolean;
+  setShowTextureDebug: (show: boolean) => void;
+  showAxesHelper: boolean;
+  setShowAxesHelper: (show: boolean) => void;
+  showProjectionRay: boolean;
+  setShowProjectionRay: (show: boolean) => void;
+}
 
-  const drawMasks = (ctx: CanvasRenderingContext2D) => {
-    masks.forEach((mask, index) => {
-      const hue = (index * 137.508) % 360; // Use golden angle approximation for color distribution
-      ctx.fillStyle = `hsla(${hue}, 70%, 50%, 0.3)`;
-      for (let y = 0; y < mask.binary_mask.length; y++) {
-        for (let x = 0; x < mask.binary_mask[y].length; x++) {
-          if (mask.binary_mask[y][x] === 1) {
-            ctx.fillRect(x, y, 1, 1);
-          }
-        }
-      }
-    });
-  };
-
-  const extractMaskedImage = (mask: Mask) => {
-    const canvas = document.createElement('canvas');
-    canvas.width = imageData.width;
-    canvas.height = imageData.height;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.putImageData(imageData, 0, 0);
-      const imageData2 = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      for (let y = 0; y < mask.binary_mask.length; y++) {
-        for (let x = 0; x < mask.binary_mask[y].length; x++) {
-          const index = (y * canvas.width + x) * 4;
-          if (mask.binary_mask[y][x] === 0) {
-            imageData2.data[index + 3] = 0; // Set alpha to 0 for non-mask pixels
-          }
-        }
-      }
-      ctx.putImageData(imageData2, 0, 0);
-      return canvas.toDataURL();
-    }
-    return null;
-  };
-
-  const handleCanvasClick = async (event: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = canvas.width / rect.width;
-      const scaleY = canvas.height / rect.height;
-      const x = (event.clientX - rect.left) * scaleX;
-      const y = (event.clientY - rect.top) * scaleY;
-
-      // Find all clicked masks
-      const clickedMasks = masks.filter(mask => {
-        const maskWidth = mask.binary_mask[0].length;
-        const maskHeight = mask.binary_mask.length;
-        const maskX = Math.floor(x * maskWidth / canvas.width);
-        const maskY = Math.floor(y * maskHeight / canvas.height);
-        return maskX >= 0 && maskX < maskWidth && maskY >= 0 && maskY < maskHeight && mask.binary_mask[maskY][maskX] === 1;
-      });
-
-      if (clickedMasks.length > 0) {
-        // Select the mask with the highest score
-        const bestMask = clickedMasks.reduce((prev, current) => (prev.score > current.score) ? prev : current);
-        setSelectedMask(bestMask);
-        const maskedImageData = extractMaskedImage(bestMask);
-        if (maskedImageData) {
-          try {
-            const modelData = await generateModelFromImage(maskedImageData);
-            console.debug('handleImageGeneration', modelData);
-            const blob = new Blob([modelData], { type: 'model/gltf-binary' });
-            const url = URL.createObjectURL(blob);
-            setModelUrl(url);
-          } catch (error) {
-            console.error('Failed to generate 3D model:', error);
-          }
-        }
-      }
-    }
-  };
-
+function DebugPanel({
+  showWireframe,
+  setShowWireframe,
+  showTextureDebug,
+  setShowTextureDebug,
+  showAxesHelper,
+  setShowAxesHelper,
+  showProjectionRay,
+  setShowProjectionRay
+}: DebugPanelProps) {
   return (
-    <div style={{ width: '100%', height: '600px', display: 'flex' }}>
-      <div style={{ width: '50%', height: '100%', overflow: 'hidden' }}>
-        <canvas 
-          ref={canvasRef}
-          onClick={handleCanvasClick}
-          style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+    <div style={{ position: 'absolute', top: 0, left: 0, background: 'rgba(0,0,0,0.7)', color: 'white', padding: '10px' }}>
+      <h3>Debug Panel</h3>
+      <label>
+        <input
+          type="checkbox"
+          checked={showWireframe}
+          onChange={(e) => setShowWireframe(e.target.checked)}
         />
-      </div>
-      <div style={{ width: '50%', height: '100%' }}>
-        <Canvas>
-          <PerspectiveCamera makeDefault position={[0, 0, 5]} fov={75} />
-          <ambientLight intensity={0.5} />
-          <spotLight position={[5, 5, 5]} angle={0.15} penumbra={1} intensity={1} castShadow />
-          <pointLight position={[-5, -5, -5]} intensity={0.5} />
-          <directionalLight position={[0, 10, 0]} intensity={0.5} />
-          <Suspense fallback={null}>
-            {modelUrl && <Model url={modelUrl} />}
-          </Suspense>
-          <OrbitControls />
-          <Environment preset="studio" />
-        </Canvas>
-      </div>
-      {selectedMask && (
-        <div style={{ position: 'absolute', bottom: 10, left: 10, background: 'rgba(0,0,0,0.5)', color: 'white', padding: '5px' }}>
-          <h3>Selected Mask Score: {selectedMask.score.toFixed(2)}</h3>
-        </div>
-      )}
+        Show Wireframe
+      </label>
+      <br />
+      <label>
+        <input
+          type="checkbox"
+          checked={showTextureDebug}
+          onChange={(e) => setShowTextureDebug(e.target.checked)}
+        />
+        Show Texture Debug
+      </label>
+      <br />
+      <label>
+        <input
+          type="checkbox"
+          checked={showAxesHelper}
+          onChange={(e) => setShowAxesHelper(e.target.checked)}
+        />
+        Show Axes Helper
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={showProjectionRay}
+          onChange={(e) => setShowProjectionRay(e.target.checked)}
+        />
+        Show Projection Ray
+      </label>
     </div>
   );
 }
+
+function Scene2D({ texture }: { texture: THREE.Texture }) {
+  return (
+    <mesh>
+      <planeGeometry args={[2, 2]} />
+      <meshBasicMaterial map={texture} transparent opacity={0.5} depthWrite={false} />
+    </mesh>
+  );
+}
+
+function MaskMesh({ mask, imageSize }: { mask: Mask; imageSize: { width: number; height: number } }) {
+  const geometry = useMemo(() => {
+    const geo = new THREE.BufferGeometry();
+    const vertices = [];
+    const indices = [];
+
+    for (let y = 0; y < mask.binary_mask.length; y++) {
+      for (let x = 0; x < mask.binary_mask[y].length; x++) {
+        if (mask.binary_mask[y][x] === 1) {
+          const x1 = (x / imageSize.width) * 2 - 1;
+          const x2 = ((x + 1) / imageSize.width) * 2 - 1;
+          const y1 = -(y / imageSize.height) * 2 + 1;
+          const y2 = -((y + 1) / imageSize.height) * 2 + 1;
+
+          vertices.push(x1, y1, 0, x2, y1, 0, x2, y2, 0, x1, y2, 0);
+          const vertexOffset = vertices.length / 3 - 4;
+          indices.push(
+            vertexOffset, vertexOffset + 1, vertexOffset + 2,
+            vertexOffset, vertexOffset + 2, vertexOffset + 3
+          );
+        }
+      }
+    }
+
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+    geo.setIndex(indices);
+    return geo;
+  }, [mask, imageSize]);
+
+  return (
+    <mesh geometry={geometry}>
+      <meshBasicMaterial color="red" side={THREE.DoubleSide} opacity={0.3} transparent />
+    </mesh>
+  );
+}
+
+export function Scene3D({ imageUrl, masks, imageData, modelUrl, points, onImageClick }: Scene3DProps) {
+  const [selectedMask, setSelectedMask] = useState<Mask | null>(null);
+  const [texture, setTexture] = useState<THREE.Texture | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [showWireframe, setShowWireframe] = useState(false);
+  const [showTextureDebug, setShowTextureDebug] = useState(false);
+  const [showAxesHelper, setShowAxesHelper] = useState(false);
+  const [showProjectionRay, setShowProjectionRay] = useState(false);
+  // Memoize the rotation object
+  const modelRotation = useMemo<{x:number, y: number, z: number}>(() => ({ x: 0, y: 0, z: 0 }), []);
+
+  // If you need to update rotation, use a function like this:
+  // const updateRotation = useCallback((x: number, y: number, z: number) => {
+  //   modelRotation.x = x;
+  //   modelRotation.y = y;
+  //   modelRotation.z = z;
+  // }, [modelRotation]);
+
+  const maskedImageResult = useMemo(() => {
+    if (selectedMask && imageData) {
+      return extractMaskedImage(imageData, selectedMask);
+    }
+    return null;
+  }, [selectedMask, imageData]);
+
+  const maskBounds = useMemo(() => {
+    if (selectedMask) {
+      return calculateMaskBounds(selectedMask);
+    }
+    return null;
+  }, [selectedMask]);
+
+  useEffect(() => {
+    if (masks.length > 0 && !selectedMask) {
+      setSelectedMask(masks[0]);
+    }
+  }, [masks, selectedMask]);
+
+  useEffect(() => {
+    if (imageUrl) {
+      const loader = new THREE.TextureLoader();
+      loader.load(imageUrl, (loadedTexture) => {
+        setTexture(loadedTexture);
+      });
+    }
+  }, [imageUrl]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas && imageData) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        // Set canvas dimensions
+        canvas.width = imageData.width;
+        canvas.height = imageData.height;
+
+        // Draw the original image
+        ctx.putImageData(imageData, 0, 0);
+
+        // Draw the mask if selected
+        if (selectedMask) {
+          ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+          for (let y = 0; y < selectedMask.binary_mask.length; y++) {
+            for (let x = 0; x < selectedMask.binary_mask[y].length; x++) {
+              if (selectedMask.binary_mask[y][x] === 1) {
+                ctx.fillRect(x, y, 1, 1);
+              }
+            }
+          }
+        }
+
+        // Draw points
+        points.forEach((point, index) => {
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, 5, 0, 2 * Math.PI);
+          ctx.fillStyle = index === points.length - 1 ? 'red' : 'blue';
+          ctx.fill();
+        });
+      }
+    }
+  }, [imageData, selectedMask, points]);
+
+  const handleImageClick = useCallback((event: React.MouseEvent<HTMLCanvasElement>) => {
+    onImageClick(event);
+  }, [onImageClick]);
+
+  if (!imageData) {
+    return null;
+  }
+
+  const aspectRatio = imageData.width / imageData.height;
+  const maxWidth = 500;
+  const width = Math.min(imageData.width, maxWidth);
+  const height = width / aspectRatio;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'row', width: '100%', height: '600px' }}>
+      <div style={{ width: `${width}px`, height: `${height}px`, marginRight: '20px' }}>
+        <canvas
+          ref={canvasRef}
+          onClick={handleImageClick}
+          style={{ 
+            width: '100%', 
+            height: '100%', 
+            border: '1px solid black', 
+            cursor: 'crosshair' 
+          }}
+        />
+      </div>
+      <div style={{ flex: 1, height: '100%', position: 'relative' }}>
+        <Canvas>
+          <PerspectiveCamera makeDefault position={[0, 0, 5]} />
+          {texture && <Scene2D texture={texture} />}
+          {selectedMask && (
+            <MaskMesh 
+              mask={selectedMask} 
+              imageSize={{ width: imageData.width, height: imageData.height }} 
+            />
+          )}
+          {modelUrl && maskBounds && maskedImageResult && (
+            <Model 
+              url={modelUrl} 
+              maskBounds={maskBounds} 
+              imageSize={{ width: imageData.width, height: imageData.height }} 
+              flipX={true}
+              maskedImageResult={maskedImageResult}
+              showWireframe={showWireframe}
+              showTextureDebug={showTextureDebug}
+              showAxesHelper={showAxesHelper}
+              showProjectionRay={showProjectionRay}
+              rotation={modelRotation}
+            />
+          )}
+          <OrbitControls enablePan={false} enableZoom={false} />
+        </Canvas>
+        <DebugPanel 
+          showWireframe={showWireframe}
+          setShowWireframe={setShowWireframe}
+          showTextureDebug={showTextureDebug}
+          setShowTextureDebug={setShowTextureDebug}
+          showAxesHelper={showAxesHelper}
+          setShowAxesHelper={setShowAxesHelper}
+          showProjectionRay={showProjectionRay}
+          setShowProjectionRay={setShowProjectionRay}
+        />
+      </div>
+    </div>
+  );
+}
+
+export default React.memo(Scene3D);
